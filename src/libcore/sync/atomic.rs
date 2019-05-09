@@ -219,6 +219,104 @@ unsafe impl<T> Sync for AtomicPtr<T> {}
 ///
 /// For more information see the [nomicon].
 ///
+/// # Sequential Consistency
+///
+/// Broadly speaking, atomic operations provide two different guarantees:
+///
+/// 1. Atomic operations are "all at once". No atomic operation will ever
+///    appear to overlap another atomic operation, even if they happen at the
+///    same time on different threads.
+/// 2. When `Ordering::SeqCst` ("sequential consistency") is used, atomic
+///    operations are guaranteed to happen in some order that's consistent with
+///    what the programmer wrote. Furthermore, every thread is guaranteed to
+///    agree on what that order was.
+///
+/// The first guarantee always applies, regardless of what `Ordering` is being
+/// used. For example, if one thread does an atomic `load` while another thread
+/// does an atomic `store` to the same variable, the reader may see either the
+/// old value or the new value, but it will never see a "torn" value with some
+/// of the old bytes and some of the new bytes. For another example, if two
+/// threads do an atomic `fetch_add` on the same variable, it's guaranteed that
+/// one of the operations will go after the other and fetch the updated value,
+/// rather than both operations fetching the original value and ignoring the
+/// other's work.
+///
+/// The second guarantee is more complicated, and it depends on what `Ordering`
+/// is used. The question is whether we can assume anything about the order of
+/// different atomic operations. Consider the following program, with two
+/// atomic variables and two threads, where each thread writes to one variable
+/// before reading the other:
+///
+/// ```
+/// # use std::sync::atomic::{AtomicBool, Ordering};
+/// static A: AtomicBool = AtomicBool::new(false);
+/// static B: AtomicBool = AtomicBool::new(false);
+///
+/// let a_child = std::thread::spawn(|| {
+///     A.store(true, Ordering::SeqCst);
+///     B.load(Ordering::SeqCst)
+/// });
+///
+/// let b_child = std::thread::spawn(|| {
+///     B.store(true, Ordering::SeqCst);
+///     A.load(Ordering::SeqCst)
+/// });
+///
+/// let b_read = a_child.join().unwrap();
+/// let a_read = b_child.join().unwrap();
+/// if a_read == false && b_read == false {
+///     panic!("inconsistent result");
+/// }
+/// ```
+///
+/// With `SeqCst`, this program is guaranteed not to panic. At least one of the
+/// two reads will be `true`, or possibly both of them, because each thread
+/// writes `true` _before_ it reads. However, if any of the loads or stores are
+/// done under any other ordering, it's possible for this program to panic.
+/// This surprising behavior can come about for several reasons:
+///
+/// - The compiler may reorder reads and writes to different variables.
+///   Reordering is a common part of optimization, so this effect might appear
+///   under `release` mode but might not under `debug` mode.
+/// - Similarly, the processor may execute reads and writes out of order.
+/// - Cache effects can cause reads from different processors to disagree about
+///   the order in which writes happened.
+///
+/// For these reasons, **it's strongly recommended to use `Ordering::SeqCst` by
+/// default.** Other orderings make weaker guarantees or no guarantees about
+/// execution order. For some workloads on some platforms, that can result in
+/// better performance. However, weakly ordered code can be very difficult to
+/// reason about.
+///
+/// # Weaker Orderings
+///
+/// The `Relaxed` ordering makes no guarantees at all about the total program
+/// order. It only guarantees that each atomic operation is "all at once".
+///
+/// The `Acquire` ordering (applicable to reads), `Release` ordering
+/// (applicable to writes), and `AcqRel` ordering (applicable to operations
+/// like `fetch_add` that both read and write) are a middle ground. They
+/// provide some guarantees around reordering, but not as many as `SeqCst`. An
+/// "acquire" operation is similar to taking a lock and beginning a critical
+/// section. Any operation (atomic or not) that comes after an acquire is
+/// guaranteed not to be reordered before it. Likewise, a "release" operation
+/// is similar to releasing a lock and ending a critical section. Any operation
+/// (atomic or not) that comes before a release is guaranteed not to be
+/// reordered after it. That means that if one thread does a release, and
+/// another thread does an acquire that sees the value written by the release,
+/// then every read after the acquire in the second thread is guaranteed to see
+/// the result of every write done by the first thread before the release.
+/// Those guarantees make it possible to use atomics to synchronize unsafe
+/// non-atomic writes to shared memory, for example by implementing a spinlock.
+///
+/// However, note what's missing from those guarantees. If a given thread does
+/// an `Acquire` followed by a `Release`, then yes, those define a critical
+/// section and cannot be reordered. But a `Release` followed by an `Acquire`
+/// _can_ be reordered. That is, adjacent but non-overlapping critical sections
+/// in your code can overlap in their excution. That's one reason the example
+/// program to fail without `SeqCst` -- any other ordering makes it possible to
+/// reorder the `load` before the `store`.
+///
 /// [nomicon]: ../../../nomicon/atomics.html
 /// [Ordering::Relaxed]: #variant.Relaxed
 /// [Ordering::SeqCst]: #variant.SeqCst
