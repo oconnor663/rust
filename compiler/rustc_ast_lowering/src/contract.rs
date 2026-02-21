@@ -287,6 +287,58 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             } else {
                 opt_expr
             };
+
+        // Inside a concurrent_bikeshed branch, transform `return val` into:
+        //   { unsafe { *__ptr_early_return = Some(val) }; return None }
+        if let Some(ref cf) = self.concurrent_bikeshed_cf {
+            if let Some((ptr_ident, ptr_hir_id)) = cf.early_return_ptr {
+                let span = checked_ret.map(|e| e.span).unwrap_or(rustc_span::DUMMY_SP);
+
+                // The value to store: val or ()
+                let val = checked_ret.unwrap_or_else(|| self.expr_unit(span));
+
+                // Build: unsafe { *__ptr_early_return = Some(val) }
+                let ptr_deref =
+                    {
+                        let ptr_expr =
+                            self.arena.alloc(self.expr_ident_mut(span, ptr_ident, ptr_hir_id));
+                        self.arena.alloc(self.expr(
+                            span,
+                            rustc_hir::ExprKind::Unary(rustc_hir::UnOp::Deref, ptr_expr),
+                        ))
+                    };
+                let some_val = self.expr_enum_variant_lang_item(
+                    span,
+                    rustc_hir::LangItem::OptionSome,
+                    std::slice::from_ref(val),
+                );
+                let assign = self.expr(
+                    span,
+                    rustc_hir::ExprKind::Assign(
+                        ptr_deref,
+                        self.arena.alloc(some_val),
+                        self.lower_span(span),
+                    ),
+                );
+                let unsafe_assign = self.expr_unsafe(span, self.arena.alloc(assign));
+                let assign_stmt = self.stmt_expr(span, unsafe_assign);
+
+                // return None (returns from the async block)
+                let none_expr = self.arena.alloc(self.expr_enum_variant_lang_item(
+                    span,
+                    rustc_hir::LangItem::OptionNone,
+                    Default::default(),
+                ));
+                let ret_none = self.expr(span, rustc_hir::ExprKind::Ret(Some(none_expr)));
+                let ret_stmt = self.stmt_expr(span, ret_none);
+
+                // Block: { unsafe { *ptr = Some(val) }; return None }
+                let stmts = arena_vec![self; assign_stmt, ret_stmt];
+                let block = self.block_all(span, stmts, None);
+                return rustc_hir::ExprKind::Block(block, None);
+            }
+        }
+
         rustc_hir::ExprKind::Ret(checked_ret)
     }
 

@@ -1,0 +1,83 @@
+error[E0267]: `break` inside `async` block
+  --> $DIR/control-flow-invalid.rs:12:11
+   |
+LL | /     concurrent_bikeshed {
+LL | |         { break; },
+   | |           ^^^^^ cannot `break` inside `async` block
+LL | |         sleep().await,
+LL | |     };
+   | |_____- enclosing `async` block
+
+error[E0267]: `break` inside `async` block
+  --> $DIR/control-flow-invalid.rs:19:11
+   |
+LL | /     concurrent_bikeshed {
+LL | |         { break 42; },
+   | |           ^^^^^^^^ cannot `break` inside `async` block
+LL | |         sleep().await,
+LL | |     };
+   | |_____- enclosing `async` block
+
+error[E0267]: `continue` inside `async` block
+  --> $DIR/control-flow-invalid.rs:28:11
+   |
+LL | /     concurrent_bikeshed {
+LL | |         { continue; },
+   | |           ^^^^^^^^ cannot `continue` inside `async` block
+LL | |         sleep().await,
+LL | |     };
+   | |_____- enclosing `async` block
+
+error[E0267]: `break` inside `async` block
+  --> $DIR/control-flow-invalid.rs:39:15
+   |
+LL | /         concurrent_bikeshed {
+LL | |             { break 'outer; },
+   | |               ^^^^^^^^^^^^ cannot `break` inside `async` block
+LL | |             sleep().await,
+LL | |         };
+   | |_________- enclosing `async` block
+
+error[E0267]: `break` inside `async` block
+  --> $DIR/control-flow-invalid.rs:52:11
+   |
+LL | /     concurrent_bikeshed {
+LL | |         { break; },
+   | |           ^^^^^ cannot `break` inside `async` block
+LL | |         { break; },
+LL | |     };
+   | |_____- enclosing `async` block
+
+error[E0267]: `break` inside `async` block
+  --> $DIR/control-flow-invalid.rs:53:11
+   |
+LL | /     concurrent_bikeshed {
+LL | |         { break; },
+LL | |         { break; },
+   | |           ^^^^^ cannot `break` inside `async` block
+LL | |     };
+   | |_____- enclosing `async` block
+
+error[E0267]: `continue` inside `async` block
+  --> $DIR/control-flow-invalid.rs:59:11
+   |
+LL | /     concurrent_bikeshed {
+LL | |         { continue; },
+   | |           ^^^^^^^^ cannot `continue` inside `async` block
+LL | |         { continue; },
+LL | |     };
+   | |_____- enclosing `async` block
+
+error[E0267]: `continue` inside `async` block
+  --> $DIR/control-flow-invalid.rs:60:11
+   |
+LL | /     concurrent_bikeshed {
+LL | |         { continue; },
+LL | |         { continue; },
+   | |           ^^^^^^^^ cannot `continue` inside `async` block
+LL | |     };
+   | |_____- enclosing `async` block
+
+error: aborting due to 8 previous errors
+
+For more information about this error, try `rustc --explain E0267`.

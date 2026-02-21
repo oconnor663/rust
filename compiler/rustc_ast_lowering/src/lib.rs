@@ -151,6 +151,23 @@ struct LoweringContext<'a, 'hir> {
     /// for `concurrent_bikeshed` path rewriting.
     concurrent_bikeshed_rewrites:
         Option<rustc_data_structures::fx::FxHashMap<NodeId, (Ident, HirId)>>,
+
+    /// When lowering inside a `concurrent_bikeshed` branch, holds the control flow
+    /// configuration for transforming return/break/continue into flag-setting + return None.
+    concurrent_bikeshed_cf: Option<ConcurrentBikeshedCf>,
+}
+
+/// Configuration for transforming control flow inside `concurrent_bikeshed` branches.
+/// Each field holds (ident, hir_id) for the raw pointer to the corresponding flag variable.
+/// Fields are `None` if no branch uses that kind of control flow.
+#[derive(Clone)]
+struct ConcurrentBikeshedCf {
+    /// `__ptr_early_return`: raw pointer to `Option<ReturnType>` flag for `return` and `?`.
+    early_return_ptr: Option<(Ident, HirId)>,
+    /// `__ptr_do_break`: raw pointer to `Option<BreakType>` flag for `break`.
+    break_ptr: Option<(Ident, HirId)>,
+    /// `__ptr_do_continue`: raw pointer to `bool` flag for `continue`.
+    continue_ptr: Option<(Ident, HirId)>,
 }
 
 impl<'a, 'hir> LoweringContext<'a, 'hir> {
@@ -214,6 +231,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             ),
             delayed_lints: Vec::new(),
             concurrent_bikeshed_rewrites: None,
+            concurrent_bikeshed_cf: None,
         }
     }
 

@@ -1,0 +1,13 @@
+error[E0267]: `break` inside `async` block
+  --> $DIR/break-no-loop.rs:10:11
+   |
+LL | /     concurrent_bikeshed {
+LL | |         { break; },
+   | |           ^^^^^ cannot `break` inside `async` block
+LL | |         sleep().await,
+LL | |     };
+   | |_____- enclosing `async` block
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0267`.
