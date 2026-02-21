@@ -858,9 +858,7 @@ impl<'a> State<'a> {
                         self.word(",");
                         self.space();
                     }
-                    let cb2 = self.cbox(0);
-                    let ib2 = self.ibox(0);
-                    self.print_block(branch, cb2, ib2);
+                    self.print_expr(branch, FixupContext::default());
                 }
                 self.bclose(expr.span, false, cb);
             }

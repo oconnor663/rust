@@ -1915,8 +1915,8 @@ pub enum ExprKind {
 
     UnsafeBinderCast(UnsafeBinderCastKind, Box<Expr>, Option<Box<Ty>>),
 
-    /// A `concurrent_bikeshed { { ... }, { ... } }` expression.
-    ConcurrentBikeshed(ThinVec<Box<Block>>),
+    /// A `concurrent_bikeshed { expr, expr, ... }` expression.
+    ConcurrentBikeshed(ThinVec<Box<Expr>>),
 
     /// Placeholder for an expression that wasn't syntactically well formed in some way.
     Err(ErrorGuaranteed),

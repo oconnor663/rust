@@ -8,9 +8,10 @@ async fn sleep() {}
 
 async fn test_different_types() {
     // Branches can return different types in the tuple
+    // Also tests brace-free expression syntax
     let (a, b): (i32, bool) = concurrent_bikeshed {
-        { 42 },
-        { true },
+        42,
+        true,
     };
     assert_eq!(a, 42);
     assert_eq!(b, true);
@@ -38,12 +39,24 @@ async fn test_three_branches() {
 }
 
 async fn test_string_values() {
+    // Brace-free with function calls
     let (a, b) = concurrent_bikeshed {
-        { String::from("hello") },
-        { String::from("world") },
+        String::from("hello"),
+        String::from("world"),
     };
     assert_eq!(a, "hello");
     assert_eq!(b, "world");
+}
+
+async fn test_mixed_syntax() {
+    let mut x = 0i32;
+    // Mix of brace-free expressions and block expressions
+    let (a, b) = concurrent_bikeshed {
+        { x += 1; 42 },
+        sleep().await,
+    };
+    assert_eq!(a, 42);
+    assert_eq!(b, ());
 }
 
 fn main() {
@@ -52,5 +65,6 @@ fn main() {
         test_with_await().await;
         test_three_branches().await;
         test_string_values().await;
+        test_mixed_syntax().await;
     };
 }

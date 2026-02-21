@@ -3589,10 +3589,8 @@ impl<'a> Parser<'a> {
         self.expect(exp!(OpenBrace))?;
         let mut branches = ThinVec::new();
         while !self.eat(exp!(CloseBrace)) {
-            let (attrs, block) = self.parse_inner_attrs_and_block(None)?;
-            // attrs are ignored for now
-            let _ = attrs;
-            branches.push(block);
+            let expr = self.parse_expr()?;
+            branches.push(expr);
             if !self.eat(exp!(Comma)) {
                 self.expect(exp!(CloseBrace))?;
                 break;

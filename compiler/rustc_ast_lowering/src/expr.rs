@@ -1099,7 +1099,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_expr_concurrent_bikeshed(
         &mut self,
         span: Span,
-        branches: &[Box<Block>],
+        branches: &[Box<Expr>],
     ) -> hir::ExprKind<'hir> {
         // Phase 1: Verify async context
         let is_async_gen = match self.coroutine_kind {
@@ -1232,7 +1232,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     // Activate path rewrites inside the async block
                     this.concurrent_bikeshed_rewrites = Some(rewrite_map.clone());
                     let result =
-                        this.with_new_scopes(gen_future_span, |this| this.lower_block_expr(branch));
+                        this.with_new_scopes(gen_future_span, |this| this.lower_expr_mut(branch));
                     // Clear rewrites after lowering
                     this.concurrent_bikeshed_rewrites = None;
                     // Wrap in unsafe block so raw pointer dereferences are allowed
@@ -1594,7 +1594,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     }
 
     /// Walk a branch's AST to collect outer variable references (NodeId, Ident).
-    fn collect_outer_vars_in_branch(&self, block: &Block) -> Vec<(NodeId, Ident)> {
+    fn collect_outer_vars_in_branch(&self, expr: &Expr) -> Vec<(NodeId, Ident)> {
         struct OuterVarCollector<'a, 'b, 'hir> {
             lowering_ctx: &'a LoweringContext<'b, 'hir>,
             local_bindings: rustc_data_structures::fx::FxHashSet<NodeId>,
@@ -1635,12 +1635,12 @@ impl<'hir> LoweringContext<'_, 'hir> {
             local_bindings: Default::default(),
             outer_vars: Vec::new(),
         };
-        collector.visit_block(block);
+        collector.visit_expr(expr);
         collector.outer_vars
     }
 
     /// Check if a branch's AST contains any `.await` expression (not inside nested async/closure).
-    fn branch_has_await(&self, block: &Block) -> bool {
+    fn branch_has_await(&self, expr: &Expr) -> bool {
         struct AwaitFinder {
             found: bool,
         }
@@ -1656,14 +1656,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
         }
 
         let mut finder = AwaitFinder { found: false };
-        finder.visit_block(block);
+        finder.visit_expr(expr);
         finder.found
     }
 
     /// For shared variables in branches with await, reject explicit &/&mut in let binding initializers.
     fn check_shared_borrows(
         &self,
-        block: &Block,
+        expr: &Expr,
         shared: &rustc_data_structures::fx::FxHashSet<NodeId>,
     ) -> Result<(), rustc_errors::ErrorGuaranteed> {
         struct BorrowChecker<'a, 'b, 'hir> {
@@ -1704,7 +1704,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         }
 
         let mut checker = BorrowChecker { lowering_ctx: self, shared, error: None };
-        checker.visit_block(block);
+        checker.visit_expr(expr);
         match checker.error {
             Some(guar) => Err(guar),
             None => Ok(()),
