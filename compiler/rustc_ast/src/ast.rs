@@ -1627,6 +1627,7 @@ impl Expr {
             | ExprKind::Type(..)
             | ExprKind::Underscore
             | ExprKind::UnsafeBinderCast(..)
+            | ExprKind::ConcurrentBikeshed(..)
             | ExprKind::While(..)
             | ExprKind::Yield(YieldKind::Postfix(..))
             | ExprKind::Err(_)
@@ -1913,6 +1914,9 @@ pub enum ExprKind {
     FormatArgs(Box<FormatArgs>),
 
     UnsafeBinderCast(UnsafeBinderCastKind, Box<Expr>, Option<Box<Ty>>),
+
+    /// A `concurrent_bikeshed { { ... }, { ... } }` expression.
+    ConcurrentBikeshed(ThinVec<Box<Block>>),
 
     /// Placeholder for an expression that wasn't syntactically well formed in some way.
     Err(ErrorGuaranteed),

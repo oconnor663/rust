@@ -125,6 +125,7 @@ impl<'a> Parser<'a> {
             && !self.token.is_qpath_start()
             && !self.is_path_start_item()
             && !self.is_builtin()
+            && !self.is_concurrent_bikeshed()
         {
             // We have avoided contextual keywords like `union`, items with `crate` visibility,
             // or `auto trait` items. We aim to parse an arbitrary path `a::b` but not something

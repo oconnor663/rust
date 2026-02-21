@@ -282,6 +282,10 @@ Tests for compile flags.
 
 Meta test suite of the test harness `compiletest` itself.
 
+## `tests/ui/concurrent-bikeshed/`: Concurrent Bikeshed
+
+Tests for the `concurrent_bikeshed` expression, which allows multiple async branches to concurrently access shared mutable local variables via raw pointer desugaring.
+
 ## `tests/ui/conditional-compilation/`: Conditional Compilation
 
 Tests for `#[cfg]` attribute or `--cfg` flags, used to compile certain files or code blocks only if certain conditions are met (such as developing on a specific architecture).

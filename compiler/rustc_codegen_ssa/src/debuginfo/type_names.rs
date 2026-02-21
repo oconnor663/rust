@@ -604,7 +604,7 @@ fn push_unqualified_item_name(
         DefPathData::CrateRoot => {
             output.push_str(tcx.crate_name(def_id.krate).as_str());
         }
-        DefPathData::Closure => {
+        DefPathData::Closure | DefPathData::LateClosure => {
             let label = coroutine_kind_label(tcx.coroutine_kind(def_id));
 
             push_disambiguated_special_name(

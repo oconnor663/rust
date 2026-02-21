@@ -146,6 +146,11 @@ struct LoweringContext<'a, 'hir> {
     delayed_lints: Vec<DelayedLint>,
 
     attribute_parser: AttributeParser<'hir>,
+
+    /// Maps outer variable declaration NodeIds to (ptr_ident, ptr_binding_HirId)
+    /// for `concurrent_bikeshed` path rewriting.
+    concurrent_bikeshed_rewrites:
+        Option<rustc_data_structures::fx::FxHashMap<NodeId, (Ident, HirId)>>,
 }
 
 impl<'a, 'hir> LoweringContext<'a, 'hir> {
@@ -208,6 +213,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 Late,
             ),
             delayed_lints: Vec::new(),
+            concurrent_bikeshed_rewrites: None,
         }
     }
 

@@ -886,6 +886,7 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
             DefPathData::TypeNs(_) => 't',
             DefPathData::ValueNs(_) => 'v',
             DefPathData::Closure => 'C',
+            DefPathData::LateClosure => 'L',
             DefPathData::Ctor => 'c',
             DefPathData::AnonConst => 'K',
             DefPathData::LateAnonConst => 'k',

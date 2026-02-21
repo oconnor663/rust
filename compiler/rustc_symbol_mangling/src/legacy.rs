@@ -31,6 +31,7 @@ pub(super) fn mangle<'tcx>(
             DefPathData::TypeNs(_)
             | DefPathData::ValueNs(_)
             | DefPathData::Closure
+            | DefPathData::LateClosure
             | DefPathData::SyntheticCoroutineBody => {
                 instance_ty = tcx.type_of(ty_def_id).instantiate_identity();
                 debug!(?instance_ty);

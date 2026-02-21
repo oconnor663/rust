@@ -304,6 +304,8 @@ pub enum DefPathData {
     AnonConst,
     /// A constant expression created during AST->HIR lowering..
     LateAnonConst,
+    /// A closure expression created during AST->HIR lowering.
+    LateClosure,
     /// A fresh anonymous lifetime created by desugaring elided lifetimes.
     DesugaredAnonymousLifetime,
     /// An existential `impl Trait` type node.
@@ -469,6 +471,7 @@ impl DefPathData {
             | Ctor
             | AnonConst
             | LateAnonConst
+            | LateClosure
             | OpaqueTy
             | AnonAssocTy(..)
             | SyntheticCoroutineBody
@@ -493,6 +496,7 @@ impl DefPathData {
             | Ctor
             | AnonConst
             | LateAnonConst
+            | LateClosure
             | OpaqueTy
             | SyntheticCoroutineBody
             | NestedStatic => None,
@@ -510,7 +514,7 @@ impl DefPathData {
             ForeignMod => DefPathDataName::Anon { namespace: kw::Extern },
             Use => DefPathDataName::Anon { namespace: kw::Use },
             GlobalAsm => DefPathDataName::Anon { namespace: sym::global_asm },
-            Closure => DefPathDataName::Anon { namespace: sym::closure },
+            Closure | LateClosure => DefPathDataName::Anon { namespace: sym::closure },
             Ctor => DefPathDataName::Anon { namespace: sym::constructor },
             AnonConst | LateAnonConst => DefPathDataName::Anon { namespace: sym::constant },
             DesugaredAnonymousLifetime => DefPathDataName::Named(kw::UnderscoreLifetime),

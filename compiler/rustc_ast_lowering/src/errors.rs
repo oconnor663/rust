@@ -527,3 +527,22 @@ pub(crate) struct CycleInDelegationSignatureResolution {
     #[primary_span]
     pub span: Span,
 }
+
+#[derive(Diagnostic)]
+#[diag("`concurrent_bikeshed` can only be used inside `async` functions and blocks")]
+pub(crate) struct ConcurrentBikeshedOutsideAsync {
+    #[primary_span]
+    pub span: Span,
+    #[label("this is not `async`")]
+    pub item_span: Option<Span>,
+}
+
+#[derive(Diagnostic)]
+#[diag(
+    "shared variable `{$var_name}` is explicitly borrowed in a branch containing `.await`; this could lead to aliasing across suspension points"
+)]
+pub(crate) struct ConcurrentBikeshedSharedBorrowAcrossAwait {
+    #[primary_span]
+    pub span: Span,
+    pub var_name: Symbol,
+}

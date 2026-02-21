@@ -740,6 +740,7 @@ symbols! {
         concat,
         concat_bytes,
         concat_idents,
+        concurrent_bikeshed,
         conservative_impl_trait,
         console,
         const_allocate,

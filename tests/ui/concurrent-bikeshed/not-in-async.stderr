@@ -1,0 +1,13 @@
+error: `concurrent_bikeshed` can only be used inside `async` functions and blocks
+  --> $DIR/not-in-async.rs:6:5
+   |
+LL |   fn main() {
+   |   --------- this is not `async`
+LL | /     concurrent_bikeshed {
+LL | |         { },
+LL | |         { },
+LL | |     };
+   | |_____^
+
+error: aborting due to 1 previous error
+

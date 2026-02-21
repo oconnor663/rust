@@ -2159,6 +2159,7 @@ fn guess_def_namespace(tcx: TyCtxt<'_>, def_id: DefId) -> Namespace {
         | DefPathData::AnonConst
         | DefPathData::LateAnonConst
         | DefPathData::Closure
+        | DefPathData::LateClosure
         | DefPathData::Ctor => Namespace::ValueNS,
 
         DefPathData::MacroNs(..) => Namespace::MacroNS,

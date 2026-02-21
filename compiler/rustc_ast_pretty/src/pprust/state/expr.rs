@@ -848,6 +848,22 @@ impl<'a> State<'a> {
                 self.end(ib);
                 self.pclose();
             }
+            ast::ExprKind::ConcurrentBikeshed(branches) => {
+                let cb = self.cbox(0);
+                let ib = self.ibox(0);
+                self.word_nbsp("concurrent_bikeshed");
+                self.bopen(ib);
+                for (i, branch) in branches.iter().enumerate() {
+                    if i > 0 {
+                        self.word(",");
+                        self.space();
+                    }
+                    let cb2 = self.cbox(0);
+                    let ib2 = self.ibox(0);
+                    self.print_block(branch, cb2, ib2);
+                }
+                self.bclose(expr.span, false, cb);
+            }
             ast::ExprKind::Err(_) => {
                 self.popen();
                 self.word("/*ERROR*/");

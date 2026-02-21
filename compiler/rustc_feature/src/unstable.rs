@@ -410,6 +410,10 @@ declare_features! (
     (unstable, closure_track_caller, "1.57.0", Some(87417)),
     /// Allows `extern "cmse-nonsecure-entry" fn()`.
     (unstable, cmse_nonsecure_entry, "1.48.0", Some(75835)),
+    // no-tracking-issue-start
+    /// Allows `concurrent_bikeshed { ... }` expressions for concurrent mutable access in async.
+    (unstable, concurrent_bikeshed, "CURRENT_RUSTC_VERSION", None),
+    // no-tracking-issue-end
     /// Allows `async {}` expressions in const contexts.
     (unstable, const_async_blocks, "1.53.0", Some(85368)),
     /// Allows `const { ... }` as a shorthand for `const _: () = const { ... };` for module items.

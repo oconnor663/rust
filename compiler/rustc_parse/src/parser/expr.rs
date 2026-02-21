@@ -1485,6 +1485,8 @@ impl<'a> Parser<'a> {
                 this.parse_expr_array_or_repeat(exp!(CloseBracket))
             } else if this.is_builtin() {
                 this.parse_expr_builtin()
+            } else if this.is_concurrent_bikeshed() {
+                this.parse_concurrent_bikeshed(lo)
             } else if this.check_path() {
                 this.parse_expr_path_start()
             } else if this.check_keyword(exp!(Move))
@@ -3582,6 +3584,30 @@ impl<'a> Parser<'a> {
         self.token.is_keyword(kw::Do) && self.is_keyword_ahead(1, &[kw::Yeet])
     }
 
+    fn parse_concurrent_bikeshed(&mut self, lo: Span) -> PResult<'a, Box<Expr>> {
+        self.bump(); // eat `concurrent_bikeshed`
+        self.expect(exp!(OpenBrace))?;
+        let mut branches = ThinVec::new();
+        while !self.eat(exp!(CloseBrace)) {
+            let (attrs, block) = self.parse_inner_attrs_and_block(None)?;
+            // attrs are ignored for now
+            let _ = attrs;
+            branches.push(block);
+            if !self.eat(exp!(Comma)) {
+                self.expect(exp!(CloseBrace))?;
+                break;
+            }
+        }
+        let span = lo.to(self.prev_token.span);
+        self.psess.gated_spans.gate(sym::concurrent_bikeshed, span);
+        Ok(self.mk_expr(span, ExprKind::ConcurrentBikeshed(branches)))
+    }
+
+    pub(super) fn is_concurrent_bikeshed(&self) -> bool {
+        self.token.is_ident_named(sym::concurrent_bikeshed)
+            && self.look_ahead(1, |t| *t == token::OpenBrace)
+    }
+
     fn is_try_block(&self) -> bool {
         self.token.is_keyword(kw::Try)
             && self.look_ahead(1, |t| {
@@ -4378,6 +4404,7 @@ impl MutVisitor for CondChecker<'_> {
             | ExprKind::Become(_)
             | ExprKind::IncludedBytes(_)
             | ExprKind::FormatArgs(_)
+            | ExprKind::ConcurrentBikeshed(_)
             | ExprKind::Err(_)
             | ExprKind::Dummy => {
                 // These would forbid any let expressions they contain already.

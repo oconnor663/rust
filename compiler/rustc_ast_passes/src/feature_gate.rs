@@ -514,6 +514,7 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session, features: &Features) {
         "half-open range patterns in slices are unstable"
     );
     gate_all!(try_blocks_heterogeneous, "`try bikeshed` expression is experimental");
+    gate_all!(concurrent_bikeshed, "`concurrent_bikeshed` expression is experimental");
     gate_all!(yeet_expr, "`do yeet` expression is experimental");
     gate_all!(const_closures, "const closures are experimental");
     gate_all!(builtin_syntax, "`builtin #` syntax is unstable");

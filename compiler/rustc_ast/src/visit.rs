@@ -1065,6 +1065,11 @@ macro_rules! common_visitor_and_walkers {
                     visit_visitable!($($mut)? vis, bytes),
                 ExprKind::UnsafeBinderCast(kind, expr, ty) =>
                     visit_visitable!($($mut)? vis, kind, expr, ty),
+                ExprKind::ConcurrentBikeshed(branches) => {
+                    for branch in branches {
+                        visit_visitable!($($mut)? vis, branch);
+                    }
+                }
                 ExprKind::Err(_guar) => {}
                 ExprKind::Dummy => {}
             }

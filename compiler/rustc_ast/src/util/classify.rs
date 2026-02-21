@@ -154,6 +154,7 @@ pub fn leading_labeled_expr(mut expr: &ast::Expr) -> bool {
             | Yeet(..)
             | Yield(..)
             | UnsafeBinderCast(..)
+            | ConcurrentBikeshed(..)
             | Err(..)
             | Dummy => return false,
         }
@@ -202,6 +203,7 @@ pub fn expr_trailing_brace(mut expr: &ast::Expr) -> Option<TrailingBrace<'_>> {
             | Struct(..)
             | TryBlock(..)
             | While(..)
+            | ConcurrentBikeshed(..)
             | ConstBlock(_) => break Some(TrailingBrace::Expr(expr)),
 
             Cast(_, ty) => {

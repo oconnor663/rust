@@ -16,7 +16,7 @@ use rustc_session::errors::report_lit_error;
 use rustc_span::source_map::{Spanned, respan};
 use rustc_span::{ByteSymbol, DUMMY_SP, DesugaringKind, Ident, Span, Symbol, sym};
 use thin_vec::{ThinVec, thin_vec};
-use visit::{Visitor, walk_expr};
+use visit::{Visitor, walk_expr, walk_pat};
 
 use super::errors::{
     AsyncCoroutinesNotSupported, AwaitOnlyInAsyncFnAndBlocks, ClosureCannotBeStatic,
@@ -97,6 +97,32 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     return self.lower_expr_for(e, pat, iter, body, *label, *kind);
                 }
                 _ => (),
+            }
+
+            // concurrent_bikeshed path rewriting: intercept path expressions that
+            // reference outer variables and replace with `unsafe { *__ptr_var }`.
+            if let Some(ref rewrites) = self.concurrent_bikeshed_rewrites {
+                if let ExprKind::Path(None, _) = &e.kind {
+                    if let Some(partial_res) = self.resolver.get_partial_res(e.id) {
+                        if let Res::Local(decl_node_id) = partial_res.base_res() {
+                            if let Some(&(ptr_ident, ptr_hir_id)) = rewrites.get(&decl_node_id) {
+                                let span = self.lower_span(e.span);
+                                // Generate: *__ptr_var (no unsafe wrapper — the whole
+                                // branch body is wrapped in an unsafe block so that
+                                // the dereference is a place expression usable on the
+                                // LHS of assignments).
+                                let ptr_expr = self.expr_ident_mut(span, ptr_ident, ptr_hir_id);
+                                return self.expr(
+                                    span,
+                                    hir::ExprKind::Unary(
+                                        hir::UnOp::Deref,
+                                        self.arena.alloc(ptr_expr),
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
             }
 
             let expr_hir_id = self.lower_node_id(e.id);
@@ -381,6 +407,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 }
 
                 ExprKind::Try(sub_expr) => self.lower_expr_try(e.span, sub_expr),
+
+                ExprKind::ConcurrentBikeshed(branches) => {
+                    self.lower_expr_concurrent_bikeshed(e.span, branches)
+                }
 
                 ExprKind::Paren(_) | ExprKind::ForLoop { .. } => {
                     unreachable!("already handled")
@@ -1048,6 +1078,529 @@ impl<'hir> LoweringContext<'_, 'hir> {
             arena_vec![self; awaitee_arm],
             hir::MatchSource::AwaitDesugar,
         )
+    }
+
+    /// Desugar `concurrent_bikeshed { { branch0 }, { branch1 }, ... }` into:
+    /// ```ignore (pseudo-rust)
+    /// {
+    ///     let __ptr_x: *mut _ = &raw mut x;
+    ///     // ... one ptr per outer variable ...
+    ///     let mut __fut_0 = async move { unsafe { *__ptr_x += 1; } };
+    ///     let mut __done_0 = false;
+    ///     let mut __fut_1 = async move { unsafe { *__ptr_x += 1; } };
+    ///     let mut __done_1 = false;
+    ///     loop {
+    ///         // poll each branch ...
+    ///         if __done_0 && __done_1 { break; }
+    ///         task_context = yield ();
+    ///     }
+    /// }
+    /// ```
+    fn lower_expr_concurrent_bikeshed(
+        &mut self,
+        span: Span,
+        branches: &[Box<Block>],
+    ) -> hir::ExprKind<'hir> {
+        // Phase 1: Verify async context
+        let is_async_gen = match self.coroutine_kind {
+            Some(hir::CoroutineKind::Desugared(hir::CoroutineDesugaring::Async, _)) => false,
+            Some(hir::CoroutineKind::Desugared(hir::CoroutineDesugaring::AsyncGen, _)) => true,
+            _ => {
+                return hir::ExprKind::Err(self.dcx().emit_err(
+                    super::errors::ConcurrentBikeshedOutsideAsync {
+                        span,
+                        item_span: self.current_item,
+                    },
+                ));
+            }
+        };
+
+        let gen_future_span = self.mark_span_with_reason(
+            DesugaringKind::Await,
+            self.lower_span(span),
+            Some(Arc::clone(&self.allow_gen_future)),
+        );
+
+        // Phase 2: Pre-analysis — collect outer variables per branch
+        let mut branch_outer_vars: Vec<Vec<(NodeId, Ident)>> = Vec::new();
+        for branch in branches {
+            branch_outer_vars.push(self.collect_outer_vars_in_branch(branch));
+        }
+
+        // Phase 3: Classify shared vs exclusive
+        // Count how many branches reference each variable (by decl NodeId)
+        use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+        let mut var_branch_count: FxHashMap<NodeId, usize> = Default::default();
+        let mut all_vars: FxHashMap<NodeId, Ident> = Default::default();
+        for outer_vars in &branch_outer_vars {
+            // Deduplicate within a branch
+            let mut seen = FxHashSet::<NodeId>::default();
+            for &(decl_id, ident) in outer_vars {
+                all_vars.entry(decl_id).or_insert(ident);
+                if seen.insert(decl_id) {
+                    *var_branch_count.entry(decl_id).or_insert(0) += 1;
+                }
+            }
+        }
+        #[allow(rustc::potential_query_instability)]
+        let shared_vars: FxHashSet<NodeId> =
+            var_branch_count.iter().filter(|&(_, count)| *count >= 2).map(|(&id, _)| id).collect();
+
+        // Phase 4: Safety check — reject explicit borrows of shared vars in branches with await
+        for (_i, branch) in branches.iter().enumerate() {
+            if self.branch_has_await(branch) {
+                if let Err(guar) = self.check_shared_borrows(branch, &shared_vars) {
+                    return hir::ExprKind::Err(guar);
+                }
+            }
+        }
+
+        // Phase 5: Generate raw pointer bindings
+        // For each outer variable, generate: let __ptr_N = &raw mut var;
+        let mut stmts: Vec<hir::Stmt<'hir>> = Vec::new();
+        let mut rewrite_map: FxHashMap<NodeId, (Ident, HirId)> = Default::default();
+
+        // Sort by NodeId for deterministic output.
+        // The iteration order doesn't affect correctness, only emission order of generated code.
+        #[allow(rustc::potential_query_instability)]
+        let mut all_vars_sorted: Vec<_> = all_vars.iter().collect();
+        all_vars_sorted.sort_by_key(|(id, _)| **id);
+        for (&decl_node_id, &var_ident) in all_vars_sorted {
+            // Create a unique pointer name for this variable
+            let ptr_ident =
+                Ident::from_str_and_span(&format!("__ptr_{}", var_ident.name), gen_future_span);
+
+            // Create the binding pattern for `let __ptr_var = ...`
+            let (ptr_pat, ptr_hir_id) =
+                self.pat_ident_binding_mode(gen_future_span, ptr_ident, hir::BindingMode::NONE);
+
+            // Build: &raw mut var
+            // First, reference the original variable via its declaration's HirId
+            let decl_local_id = self.ident_and_label_to_local_id[&decl_node_id];
+            let decl_hir_id = HirId { owner: self.current_hir_id_owner, local_id: decl_local_id };
+            let var_expr =
+                self.arena.alloc(self.expr_ident_mut(gen_future_span, var_ident, decl_hir_id));
+            let raw_ptr_expr = self.expr(
+                gen_future_span,
+                hir::ExprKind::AddrOf(hir::BorrowKind::Raw, hir::Mutability::Mut, var_expr),
+            );
+            let raw_ptr_expr = self.arena.alloc(raw_ptr_expr);
+
+            // let __ptr_var = &raw mut var;
+            let ptr_stmt = self.stmt_let_pat(
+                None,
+                gen_future_span,
+                Some(raw_ptr_expr),
+                ptr_pat,
+                hir::LocalSource::Normal,
+            );
+            stmts.push(ptr_stmt);
+
+            // Record the mapping: decl_node_id -> (ptr_ident, ptr_hir_id)
+            rewrite_map.insert(decl_node_id, (ptr_ident, ptr_hir_id));
+        }
+
+        // Phase 6: Lower each branch as `async move` block
+        let mut fut_idents: Vec<(Ident, HirId)> = Vec::new();
+        let mut done_idents: Vec<(Ident, HirId)> = Vec::new();
+
+        for (i, branch) in branches.iter().enumerate() {
+            // Create the async closure node
+            let closure_node_id = self.next_node_id();
+            self.create_def(
+                closure_node_id,
+                None,
+                DefKind::Closure,
+                DefPathData::LateClosure,
+                gen_future_span,
+            );
+
+            // Save old rewrites, activate new ones
+            let old_rewrites = self.concurrent_bikeshed_rewrites.take();
+
+            // Build the async block for this branch
+            let async_expr = self.make_desugared_coroutine_expr(
+                CaptureBy::Value { move_kw: gen_future_span },
+                closure_node_id,
+                None,
+                gen_future_span,
+                gen_future_span,
+                hir::CoroutineDesugaring::Async,
+                hir::CoroutineSource::Block,
+                |this| {
+                    // Activate path rewrites inside the async block
+                    this.concurrent_bikeshed_rewrites = Some(rewrite_map.clone());
+                    let result =
+                        this.with_new_scopes(gen_future_span, |this| this.lower_block_expr(branch));
+                    // Clear rewrites after lowering
+                    this.concurrent_bikeshed_rewrites = None;
+                    // Wrap in unsafe block so raw pointer dereferences are allowed
+                    this.expr_unsafe(gen_future_span, this.arena.alloc(result))
+                },
+            );
+
+            // Restore old rewrites
+            self.concurrent_bikeshed_rewrites = old_rewrites;
+
+            // let mut __fut_i = <async block>;
+            let fut_ident = Ident::from_str_and_span(&format!("__fut_{}", i), gen_future_span);
+            let (fut_pat, fut_hir_id) =
+                self.pat_ident_binding_mode(gen_future_span, fut_ident, hir::BindingMode::MUT);
+            // Use the closure's NodeId for the HirId so the DefId gets registered
+            // as a NonOwner child in the HIR owners table.
+            let async_expr = self.arena.alloc(hir::Expr {
+                hir_id: self.lower_node_id(closure_node_id),
+                kind: async_expr,
+                span: self.lower_span(gen_future_span),
+            });
+            let fut_stmt = self.stmt_let_pat(
+                None,
+                gen_future_span,
+                Some(async_expr),
+                fut_pat,
+                hir::LocalSource::Normal,
+            );
+            stmts.push(fut_stmt);
+            fut_idents.push((fut_ident, fut_hir_id));
+
+            // let mut __done_i = false;
+            let done_ident = Ident::from_str_and_span(&format!("__done_{}", i), gen_future_span);
+            let (done_pat, done_hir_id) =
+                self.pat_ident_binding_mode(gen_future_span, done_ident, hir::BindingMode::MUT);
+            let false_expr = self.arena.alloc(self.expr_bool_literal(gen_future_span, false));
+            let done_stmt = self.stmt_let_pat(
+                None,
+                gen_future_span,
+                Some(false_expr),
+                done_pat,
+                hir::LocalSource::Normal,
+            );
+            stmts.push(done_stmt);
+            done_idents.push((done_ident, done_hir_id));
+        }
+
+        // Phase 7: Generate join polling loop
+        let task_context_ident = Ident::with_dummy_span(sym::_task_context);
+
+        let loop_node_id = self.next_node_id();
+        let loop_hir_id = self.lower_node_id(loop_node_id);
+
+        let mut loop_stmts: Vec<hir::Stmt<'hir>> = Vec::new();
+
+        // For each branch i, generate:
+        // if !__done_i {
+        //     match unsafe { Future::poll(Pin::new_unchecked(&mut __fut_i), get_context(task_context)) } {
+        //         Poll::Ready(()) => { __done_i = true; }
+        //         Poll::Pending => {}
+        //     }
+        // }
+        for ((fut_ident, fut_hir_id), (done_ident, done_hir_id)) in
+            fut_idents.iter().zip(done_idents.iter())
+        {
+            // !__done_i
+            let done_expr = self.expr_ident_mut(gen_future_span, *done_ident, *done_hir_id);
+            let not_done = self.expr(
+                gen_future_span,
+                hir::ExprKind::Unary(hir::UnOp::Not, self.arena.alloc(done_expr)),
+            );
+
+            // &mut __fut_i
+            let fut_expr = self.expr_ident(gen_future_span, *fut_ident, *fut_hir_id);
+            let ref_mut_fut = self.expr_mut_addr_of(gen_future_span, fut_expr);
+
+            // Pin::new_unchecked(&mut __fut_i)
+            let new_unchecked = self.expr_call_lang_item_fn_mut(
+                gen_future_span,
+                hir::LangItem::PinNewUnchecked,
+                arena_vec![self; ref_mut_fut],
+            );
+
+            // get_context(task_context)
+            let Some(task_context_hid) = self.task_context else {
+                unreachable!("concurrent_bikeshed outside async context");
+            };
+            let task_context =
+                self.expr_ident_mut(gen_future_span, task_context_ident, task_context_hid);
+            let get_context = self.expr_call_lang_item_fn_mut(
+                gen_future_span,
+                hir::LangItem::GetContext,
+                arena_vec![self; task_context],
+            );
+
+            // Future::poll(pin, cx)
+            let poll_call = self.expr_call_lang_item_fn(
+                gen_future_span,
+                hir::LangItem::FuturePoll,
+                arena_vec![self; new_unchecked, get_context],
+            );
+            let unsafe_poll = self.arena.alloc(self.expr_unsafe(gen_future_span, poll_call));
+
+            // Poll::Ready(_) => { __done_i = true; }
+            let ready_arm = {
+                let wild_pat =
+                    self.arena.alloc(self.pat_without_dbm(gen_future_span, hir::PatKind::Wild));
+                let ready_field = self.single_pat_field(gen_future_span, wild_pat);
+                let ready_pat = self.pat_lang_item_variant(
+                    gen_future_span,
+                    hir::LangItem::PollReady,
+                    ready_field,
+                );
+                // __done_i = true
+                let done_lhs = self.expr_ident(gen_future_span, *done_ident, *done_hir_id);
+                let true_expr = self.arena.alloc(self.expr_bool_literal(gen_future_span, true));
+                let assign = self.expr(
+                    gen_future_span,
+                    hir::ExprKind::Assign(done_lhs, true_expr, self.lower_span(gen_future_span)),
+                );
+                let assign_block = self.block_expr(self.arena.alloc(assign));
+                let assign_expr = self.arena.alloc(self.expr_block(assign_block));
+                self.arm(ready_pat, assign_expr, gen_future_span)
+            };
+
+            // Poll::Pending => {}
+            let pending_arm = {
+                let pending_pat =
+                    self.pat_lang_item_variant(gen_future_span, hir::LangItem::PollPending, &[]);
+                let empty_block = self.expr_block_empty(gen_future_span);
+                self.arm(pending_pat, empty_block, gen_future_span)
+            };
+
+            let poll_match = self.expr_match(
+                gen_future_span,
+                unsafe_poll,
+                arena_vec![self; ready_arm, pending_arm],
+                hir::MatchSource::AwaitDesugar,
+            );
+
+            // if !__done_i { match ... }
+            let poll_block = self.block_expr(self.arena.alloc(poll_match));
+            let poll_block_expr = self.arena.alloc(self.expr_block(poll_block));
+            let empty_block = self.expr_block_empty(gen_future_span);
+            let if_expr = self.expr(
+                gen_future_span,
+                hir::ExprKind::If(self.arena.alloc(not_done), poll_block_expr, Some(empty_block)),
+            );
+            loop_stmts.push(self.stmt_expr(gen_future_span, if_expr));
+        }
+
+        // if __done_0 && __done_1 && ... { break; }
+        let all_done = {
+            let mut expr: Option<hir::Expr<'hir>> = None;
+            for (done_ident, done_hir_id) in &done_idents {
+                let done_ref = self.expr_ident_mut(gen_future_span, *done_ident, *done_hir_id);
+                expr = Some(match expr {
+                    None => done_ref,
+                    Some(prev) => self.expr(
+                        gen_future_span,
+                        hir::ExprKind::Binary(
+                            Spanned { node: hir::BinOpKind::And, span: gen_future_span },
+                            self.arena.alloc(prev),
+                            self.arena.alloc(done_ref),
+                        ),
+                    ),
+                });
+            }
+            expr.unwrap_or_else(|| self.expr_bool_literal(gen_future_span, true))
+        };
+
+        let break_expr = self.with_loop_scope(loop_hir_id, |this| {
+            let expr_break = hir::ExprKind::Break(this.lower_loop_destination(None), None);
+            this.arena.alloc(this.expr(gen_future_span, expr_break))
+        });
+        let break_block = self.block_expr(break_expr);
+        let break_block_expr = self.arena.alloc(self.expr_block(break_block));
+        let empty_block = self.expr_block_empty(gen_future_span);
+        let all_done_check = self.expr(
+            gen_future_span,
+            hir::ExprKind::If(self.arena.alloc(all_done), break_block_expr, Some(empty_block)),
+        );
+        loop_stmts.push(self.stmt_expr(gen_future_span, all_done_check));
+
+        // task_context = yield ();
+        let yield_stmt = {
+            let yielded = if is_async_gen {
+                self.arena.alloc(
+                    self.expr_lang_item_path(gen_future_span, hir::LangItem::AsyncGenPending),
+                )
+            } else {
+                self.expr_unit(gen_future_span)
+            };
+
+            let yield_expr = self.expr(
+                gen_future_span,
+                hir::ExprKind::Yield(yielded, hir::YieldSource::Await { expr: None }),
+            );
+            let yield_expr = self.arena.alloc(yield_expr);
+
+            let Some(task_context_hid) = self.task_context else {
+                unreachable!("concurrent_bikeshed outside async context");
+            };
+
+            let lhs = self.expr_ident(gen_future_span, task_context_ident, task_context_hid);
+            let assign = self.expr(
+                gen_future_span,
+                hir::ExprKind::Assign(lhs, yield_expr, self.lower_span(gen_future_span)),
+            );
+            self.stmt_expr(gen_future_span, assign)
+        };
+        loop_stmts.push(yield_stmt);
+
+        // Build the loop block and loop expression
+        let loop_stmts = self.arena.alloc_from_iter(loop_stmts);
+        let loop_block = self.arena.alloc(hir::Block {
+            stmts: loop_stmts,
+            expr: None,
+            hir_id: self.next_id(),
+            rules: hir::BlockCheckMode::DefaultBlock,
+            span: self.lower_span(gen_future_span),
+            targeted_by_break: false,
+        });
+
+        let loop_expr = self.arena.alloc(hir::Expr {
+            hir_id: loop_hir_id,
+            kind: hir::ExprKind::Loop(
+                loop_block,
+                None,
+                hir::LoopSource::Loop,
+                self.lower_span(gen_future_span),
+            ),
+            span: self.lower_span(gen_future_span),
+        });
+
+        // Phase 8: Wrap in outer block
+        let loop_block_inner = self.block_expr(loop_expr);
+        let loop_block_expr = self.expr_block(loop_block_inner);
+        let loop_stmt = self.stmt_expr(gen_future_span, loop_block_expr);
+        stmts.push(loop_stmt);
+        let stmts = self.arena.alloc_from_iter(stmts);
+        let outer_block = self.arena.alloc(hir::Block {
+            stmts,
+            expr: None,
+            hir_id: self.next_id(),
+            rules: hir::BlockCheckMode::DefaultBlock,
+            span: self.lower_span(span),
+            targeted_by_break: false,
+        });
+
+        hir::ExprKind::Block(outer_block, None)
+    }
+
+    /// Walk a branch's AST to collect outer variable references (NodeId, Ident).
+    fn collect_outer_vars_in_branch(&self, block: &Block) -> Vec<(NodeId, Ident)> {
+        struct OuterVarCollector<'a, 'b, 'hir> {
+            lowering_ctx: &'a LoweringContext<'b, 'hir>,
+            local_bindings: rustc_data_structures::fx::FxHashSet<NodeId>,
+            outer_vars: Vec<(NodeId, Ident)>,
+        }
+
+        impl<'ast> Visitor<'ast> for OuterVarCollector<'_, '_, '_> {
+            fn visit_pat(&mut self, p: &'ast Pat) {
+                if let PatKind::Ident(_, _ident, _) = &p.kind {
+                    self.local_bindings.insert(p.id);
+                }
+                walk_pat(self, p);
+            }
+
+            fn visit_expr(&mut self, ex: &'ast Expr) {
+                if let ExprKind::Path(None, path) = &ex.kind {
+                    if path.segments.len() == 1 {
+                        if let Some(partial_res) = self.lowering_ctx.resolver.get_partial_res(ex.id)
+                        {
+                            if let Res::Local(decl_id) = partial_res.base_res() {
+                                if !self.local_bindings.contains(&decl_id) {
+                                    self.outer_vars.push((decl_id, path.segments[0].ident));
+                                }
+                            }
+                        }
+                    }
+                }
+                // Don't descend into nested closures/async blocks
+                match &ex.kind {
+                    ExprKind::Closure(_) | ExprKind::Gen(..) => return,
+                    _ => walk_expr(self, ex),
+                }
+            }
+        }
+
+        let mut collector = OuterVarCollector {
+            lowering_ctx: self,
+            local_bindings: Default::default(),
+            outer_vars: Vec::new(),
+        };
+        collector.visit_block(block);
+        collector.outer_vars
+    }
+
+    /// Check if a branch's AST contains any `.await` expression (not inside nested async/closure).
+    fn branch_has_await(&self, block: &Block) -> bool {
+        struct AwaitFinder {
+            found: bool,
+        }
+
+        impl<'ast> Visitor<'ast> for AwaitFinder {
+            fn visit_expr(&mut self, ex: &'ast Expr) {
+                match &ex.kind {
+                    ExprKind::Await(_, _) => self.found = true,
+                    ExprKind::Closure(_) | ExprKind::Gen(..) => return,
+                    _ => walk_expr(self, ex),
+                }
+            }
+        }
+
+        let mut finder = AwaitFinder { found: false };
+        finder.visit_block(block);
+        finder.found
+    }
+
+    /// For shared variables in branches with await, reject explicit &/&mut in let binding initializers.
+    fn check_shared_borrows(
+        &self,
+        block: &Block,
+        shared: &rustc_data_structures::fx::FxHashSet<NodeId>,
+    ) -> Result<(), rustc_errors::ErrorGuaranteed> {
+        struct BorrowChecker<'a, 'b, 'hir> {
+            lowering_ctx: &'a LoweringContext<'b, 'hir>,
+            shared: &'a rustc_data_structures::fx::FxHashSet<NodeId>,
+            error: Option<rustc_errors::ErrorGuaranteed>,
+        }
+
+        impl<'ast> Visitor<'ast> for BorrowChecker<'_, '_, '_> {
+            fn visit_expr(&mut self, ex: &'ast Expr) {
+                if let ExprKind::AddrOf(_, _, inner) = &ex.kind {
+                    if let ExprKind::Path(None, path) = &inner.kind {
+                        if path.segments.len() == 1 {
+                            if let Some(partial_res) =
+                                self.lowering_ctx.resolver.get_partial_res(inner.id)
+                            {
+                                if let Res::Local(decl_id) = partial_res.base_res() {
+                                    if self.shared.contains(&decl_id) {
+                                        self.error = Some(
+                                            self.lowering_ctx.dcx().emit_err(
+                                                super::errors::ConcurrentBikeshedSharedBorrowAcrossAwait {
+                                                    span: ex.span,
+                                                    var_name: path.segments[0].ident.name,
+                                                },
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                match &ex.kind {
+                    ExprKind::Closure(_) | ExprKind::Gen(..) => return,
+                    _ => walk_expr(self, ex),
+                }
+            }
+        }
+
+        let mut checker = BorrowChecker { lowering_ctx: self, shared, error: None };
+        checker.visit_block(block);
+        match checker.error {
+            Some(guar) => Err(guar),
+            None => Ok(()),
+        }
     }
 
     fn lower_expr_use(&mut self, use_kw_span: Span, expr: &Expr) -> hir::ExprKind<'hir> {
