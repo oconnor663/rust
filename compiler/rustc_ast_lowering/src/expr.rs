@@ -1203,6 +1203,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         // Phase 6: Lower each branch as `async move` block
         let mut fut_idents: Vec<(Ident, HirId)> = Vec::new();
         let mut done_idents: Vec<(Ident, HirId)> = Vec::new();
+        let mut result_idents: Vec<(Ident, HirId)> = Vec::new();
 
         for (i, branch) in branches.iter().enumerate() {
             // Create the async closure node
@@ -1277,6 +1278,26 @@ impl<'hir> LoweringContext<'_, 'hir> {
             );
             stmts.push(done_stmt);
             done_idents.push((done_ident, done_hir_id));
+
+            // let mut __result_i = None;
+            let result_ident =
+                Ident::from_str_and_span(&format!("__result_{}", i), gen_future_span);
+            let (result_pat, result_hir_id) =
+                self.pat_ident_binding_mode(gen_future_span, result_ident, hir::BindingMode::MUT);
+            let none_expr = self.arena.alloc(self.expr_enum_variant_lang_item(
+                gen_future_span,
+                hir::LangItem::OptionNone,
+                Default::default(),
+            ));
+            let result_stmt = self.stmt_let_pat(
+                None,
+                gen_future_span,
+                Some(none_expr),
+                result_pat,
+                hir::LocalSource::Normal,
+            );
+            stmts.push(result_stmt);
+            result_idents.push((result_ident, result_hir_id));
         }
 
         // Phase 7: Generate join polling loop
@@ -1294,8 +1315,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
         //         Poll::Pending => {}
         //     }
         // }
-        for ((fut_ident, fut_hir_id), (done_ident, done_hir_id)) in
-            fut_idents.iter().zip(done_idents.iter())
+        for (((fut_ident, fut_hir_id), (done_ident, done_hir_id)), (result_ident, result_hir_id)) in
+            fut_idents.iter().zip(done_idents.iter()).zip(result_idents.iter())
         {
             // !__done_i
             let done_expr = self.expr_ident_mut(gen_future_span, *done_ident, *done_hir_id);
@@ -1335,26 +1356,50 @@ impl<'hir> LoweringContext<'_, 'hir> {
             );
             let unsafe_poll = self.arena.alloc(self.expr_unsafe(gen_future_span, poll_call));
 
-            // Poll::Ready(_) => { __done_i = true; }
+            // Poll::Ready(__val) => { __result_i = Some(__val); __done_i = true; }
             let ready_arm = {
-                let wild_pat =
-                    self.arena.alloc(self.pat_without_dbm(gen_future_span, hir::PatKind::Wild));
-                let ready_field = self.single_pat_field(gen_future_span, wild_pat);
+                let val_ident = Ident::from_str_and_span("__val", gen_future_span);
+                let (val_pat, val_hir_id) =
+                    self.pat_ident_binding_mode(gen_future_span, val_ident, hir::BindingMode::NONE);
+                let ready_field = self.single_pat_field(gen_future_span, val_pat);
                 let ready_pat = self.pat_lang_item_variant(
                     gen_future_span,
                     hir::LangItem::PollReady,
                     ready_field,
                 );
-                // __done_i = true
+
+                // __result_i = Some(__val);
+                let val_expr = self.expr_ident_mut(gen_future_span, val_ident, val_hir_id);
+                let some_expr = self.expr_enum_variant_lang_item(
+                    gen_future_span,
+                    hir::LangItem::OptionSome,
+                    arena_vec![self; val_expr],
+                );
+                let result_lhs = self.expr_ident(gen_future_span, *result_ident, *result_hir_id);
+                let result_assign = self.expr(
+                    gen_future_span,
+                    hir::ExprKind::Assign(
+                        result_lhs,
+                        self.arena.alloc(some_expr),
+                        self.lower_span(gen_future_span),
+                    ),
+                );
+                let result_assign_stmt = self.stmt_expr(gen_future_span, result_assign);
+
+                // __done_i = true;
                 let done_lhs = self.expr_ident(gen_future_span, *done_ident, *done_hir_id);
                 let true_expr = self.arena.alloc(self.expr_bool_literal(gen_future_span, true));
-                let assign = self.expr(
+                let done_assign = self.expr(
                     gen_future_span,
                     hir::ExprKind::Assign(done_lhs, true_expr, self.lower_span(gen_future_span)),
                 );
-                let assign_block = self.block_expr(self.arena.alloc(assign));
-                let assign_expr = self.arena.alloc(self.expr_block(assign_block));
-                self.arm(ready_pat, assign_expr, gen_future_span)
+                let done_assign_stmt = self.stmt_expr(gen_future_span, done_assign);
+
+                // Block with both statements
+                let body_stmts = arena_vec![self; result_assign_stmt, done_assign_stmt];
+                let body_block = self.block_all(gen_future_span, body_stmts, None);
+                let body_expr = self.arena.alloc(self.expr_block(body_block));
+                self.arm(ready_pat, body_expr, gen_future_span)
             };
 
             // Poll::Pending => {}
@@ -1467,15 +1512,78 @@ impl<'hir> LoweringContext<'_, 'hir> {
             span: self.lower_span(gen_future_span),
         });
 
-        // Phase 8: Wrap in outer block
+        // Phase 8: Wrap in outer block with tuple result
         let loop_block_inner = self.block_expr(loop_expr);
         let loop_block_expr = self.expr_block(loop_block_inner);
         let loop_stmt = self.stmt_expr(gen_future_span, loop_block_expr);
         stmts.push(loop_stmt);
+
+        // Unwrap each __result_i and build the tuple trailing expression
+        let mut unwrapped: Vec<hir::Expr<'hir>> = Vec::new();
+        for (result_ident, result_hir_id) in &result_idents {
+            // match __result_i { Some(__val) => __val, None => loop {} }
+            let result_ref = self.arena.alloc(self.expr_ident_mut(
+                gen_future_span,
+                *result_ident,
+                *result_hir_id,
+            ));
+
+            // Some(__val) => __val
+            let some_arm = {
+                let val_ident = Ident::from_str_and_span("__val", gen_future_span);
+                let (val_pat, val_hir_id) =
+                    self.pat_ident_binding_mode(gen_future_span, val_ident, hir::BindingMode::NONE);
+                let some_pat = self.pat_some(gen_future_span, val_pat);
+                let val_body =
+                    self.arena.alloc(self.expr_ident_mut(gen_future_span, val_ident, val_hir_id));
+                self.arm(some_pat, val_body, gen_future_span)
+            };
+
+            // None => loop {} (diverging, since this arm is unreachable)
+            let none_arm = {
+                let none_pat = self.pat_none(gen_future_span);
+                let empty_block = self.arena.alloc(hir::Block {
+                    stmts: &[],
+                    expr: None,
+                    hir_id: self.next_id(),
+                    rules: hir::BlockCheckMode::DefaultBlock,
+                    span: self.lower_span(gen_future_span),
+                    targeted_by_break: false,
+                });
+                let loop_diverge = self.arena.alloc(hir::Expr {
+                    hir_id: self.next_id(),
+                    kind: hir::ExprKind::Loop(
+                        empty_block,
+                        None,
+                        hir::LoopSource::Loop,
+                        self.lower_span(gen_future_span),
+                    ),
+                    span: self.lower_span(gen_future_span),
+                });
+                self.arm(none_pat, loop_diverge, gen_future_span)
+            };
+
+            let match_expr = self.expr_match(
+                gen_future_span,
+                result_ref,
+                arena_vec![self; some_arm, none_arm],
+                hir::MatchSource::Normal,
+            );
+            unwrapped.push(match_expr);
+        }
+
+        // Build trailing expression: tuple for multiple branches, direct value for single
+        let trailing_expr = if unwrapped.len() == 1 {
+            self.arena.alloc(unwrapped.into_iter().next().unwrap())
+        } else {
+            let tup_fields = self.arena.alloc_from_iter(unwrapped);
+            self.arena.alloc(self.expr(gen_future_span, hir::ExprKind::Tup(tup_fields)))
+        };
+
         let stmts = self.arena.alloc_from_iter(stmts);
         let outer_block = self.arena.alloc(hir::Block {
             stmts,
-            expr: None,
+            expr: Some(trailing_expr),
             hir_id: self.next_id(),
             rules: hir::BlockCheckMode::DefaultBlock,
             span: self.lower_span(span),
