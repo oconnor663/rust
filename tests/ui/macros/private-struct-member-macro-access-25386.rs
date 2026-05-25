@@ -18,7 +18,7 @@ mod stuff {
 macro_rules! check_ptr_exist {
     ($var:expr, $member:ident) => (
         (*$var.c_object).$member.is_some()
-        //~^ ERROR field `c_object` of struct `Item` is private
+        //~^ ERROR field `c_object` of struct `stuff::Item` is private
     );
 }
 

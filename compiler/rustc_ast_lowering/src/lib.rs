@@ -125,6 +125,11 @@ struct LoweringContext<'a, 'hir> {
     /// `task_context` local bound to the resume argument of the coroutine.
     task_context: Option<HirId>,
 
+    /// The async iterators currently being consumed by enclosing `for await`
+    /// loop bodies. Awaits in those bodies poll each iterator's `poll_progress`
+    /// method before yielding back to the executor.
+    for_await_progress: Vec<ForAwaitProgress>,
+
     /// Used to get the current `fn`'s def span to point to when using `await`
     /// outside of an `async fn`.
     current_item: Option<Span>,
@@ -177,6 +182,13 @@ struct LoweringContext<'a, 'hir> {
     attribute_parser: AttributeParser<'hir>,
 }
 
+#[derive(Copy, Clone)]
+struct ForAwaitProgress {
+    span: Span,
+    iter_ident: Ident,
+    iter_hir_id: HirId,
+}
+
 impl<'a, 'hir> LoweringContext<'a, 'hir> {
     fn new(tcx: TyCtxt<'hir>, resolver: &'a ResolverAstLowering<'hir>, owner: NodeId) -> Self {
         let current_ast_owner = &resolver.owners[&owner];
@@ -219,6 +231,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             is_in_dyn_type: false,
             coroutine_kind: None,
             task_context: None,
+            for_await_progress: Vec::new(),
             current_item: None,
             impl_trait_defs: Vec::new(),
             impl_trait_bounds: Vec::new(),
@@ -1133,12 +1146,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
         self.is_in_loop_condition = false;
 
         let old_contract = self.contract_ensures.take();
+        let for_await_progress = mem::take(&mut self.for_await_progress);
 
         let try_block_scope = mem::replace(&mut self.try_block_scope, TryBlockScope::Function);
         let loop_scope = self.loop_scope.take();
         let ret = f(self);
         self.try_block_scope = try_block_scope;
         self.loop_scope = loop_scope;
+        self.for_await_progress = for_await_progress;
 
         self.contract_ensures = old_contract;
 

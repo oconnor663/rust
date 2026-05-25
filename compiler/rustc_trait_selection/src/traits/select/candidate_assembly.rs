@@ -388,12 +388,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 debug!(?self_ty, ?obligation, "assemble_iterator_candidates");
 
                 // Can only confirm this candidate if we have constrained
-                // the `Yield` type to at least `Poll<Option<?0>>`..
-                let ty::Adt(_poll_def, args) = *args.as_coroutine().yield_ty().kind() else {
-                    candidates.ambiguous = true;
-                    return;
-                };
-                let ty::Adt(_option_def, _) = *args.type_at(0).kind() else {
+                // the `Yield` type to at least `PollNext<?0>`.
+                let ty::Adt(_poll_next_def, _) = *args.as_coroutine().yield_ty().kind() else {
                     candidates.ambiguous = true;
                     return;
                 };

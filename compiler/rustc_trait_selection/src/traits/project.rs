@@ -1518,10 +1518,7 @@ fn confirm_async_iterator_candidate<'cx, 'tcx>(
         sym::Item
     );
 
-    let ty::Adt(_poll_adt, args) = *yield_ty.kind() else {
-        bug!();
-    };
-    let ty::Adt(_option_adt, args) = *args.type_at(0).kind() else {
+    let ty::Adt(_poll_next_adt, args) = *yield_ty.kind() else {
         bug!();
     };
     let item_ty = args.type_at(0);

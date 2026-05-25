@@ -221,10 +221,9 @@ impl<'tcx> TransformVisitor<'tcx> {
                     IndexVec::new(),
                 )
             }
-            // `async gen` continues to return `Poll::Ready(None)`
+            // `async gen` continues to return `PollNext::Done`
             CoroutineKind::Desugared(CoroutineDesugaring::AsyncGen, _) => {
-                let ty::Adt(_poll_adt, args) = *self.old_yield_ty.kind() else { bug!() };
-                let ty::Adt(_option_adt, args) = *args.type_at(0).kind() else { bug!() };
+                let ty::Adt(_poll_next_adt, args) = *self.old_yield_ty.kind() else { bug!() };
                 let yield_ty = args.type_at(0);
                 Rvalue::Use(
                     Operand::Constant(Box::new(ConstOperand {
@@ -299,8 +298,7 @@ impl<'tcx> TransformVisitor<'tcx> {
             }
             CoroutineKind::Desugared(CoroutineDesugaring::AsyncGen, _) => {
                 if is_return {
-                    let ty::Adt(_poll_adt, args) = *self.old_yield_ty.kind() else { bug!() };
-                    let ty::Adt(_option_adt, args) = *args.type_at(0).kind() else { bug!() };
+                    let ty::Adt(_poll_next_adt, args) = *self.old_yield_ty.kind() else { bug!() };
                     let yield_ty = args.type_at(0);
                     Rvalue::Use(
                         Operand::Constant(Box::new(ConstOperand {
@@ -1031,7 +1029,7 @@ impl<'tcx> crate::MirPass<'tcx> for StateTransform {
                 Ty::new_adt(tcx, option_adt_ref, option_args)
             }
             CoroutineKind::Desugared(CoroutineDesugaring::AsyncGen, _) => {
-                // The yield ty is already `Poll<Option<yield_ty>>`
+                // The yield ty is already `PollNext<yield_ty>`
                 old_yield_ty
             }
             CoroutineKind::Coroutine(_) => {

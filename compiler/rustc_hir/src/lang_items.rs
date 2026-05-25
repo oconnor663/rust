@@ -370,6 +370,10 @@ language_item_table! {
     Poll,                    sym::Poll,                poll,                       Target::Enum,           GenericRequirement::None;
     PollReady,               sym::Ready,               poll_ready_variant,         Target::Variant,        GenericRequirement::None;
     PollPending,             sym::Pending,             poll_pending_variant,       Target::Variant,        GenericRequirement::None;
+    PollNext,                sym::PollNext,            poll_next,                  Target::Enum,           GenericRequirement::None;
+    PollNextItem,            sym::PollNextItem,        poll_next_item_variant,     Target::Variant,        GenericRequirement::None;
+    PollNextPending,         sym::PollNextPending,     poll_next_pending_variant,  Target::Variant,        GenericRequirement::None;
+    PollNextDone,            sym::PollNextDone,        poll_next_done_variant,     Target::Variant,        GenericRequirement::None;
 
     AsyncGenReady,           sym::AsyncGenReady,       async_gen_ready,            Target::Method(MethodKind::Inherent), GenericRequirement::Exact(1);
     AsyncGenPending,         sym::AsyncGenPending,     async_gen_pending,          Target::AssocConst,     GenericRequirement::Exact(1);
@@ -383,8 +387,10 @@ language_item_table! {
     Context,                 sym::Context,             context,                    Target::Struct,         GenericRequirement::None;
     FuturePoll,              sym::poll,                future_poll_fn,             Target::Method(MethodKind::Trait { body: false }), GenericRequirement::None;
 
-    AsyncIteratorPollNext,   sym::async_iterator_poll_next, async_iterator_poll_next, Target::Method(MethodKind::Trait { body: false }), GenericRequirement::Exact(0);
-    IntoAsyncIterIntoIter,   sym::into_async_iter_into_iter, into_async_iter_into_iter, Target::Method(MethodKind::Trait { body: false }), GenericRequirement::Exact(0);
+    AsyncIteratorPollNext,     sym::async_iterator_poll_next, async_iterator_poll_next, Target::Method(MethodKind::Trait { body: false }), GenericRequirement::Exact(0);
+    AsyncIteratorPollProgress, sym::async_iterator_poll_progress, async_iterator_poll_progress, Target::Method(MethodKind::Trait { body: false }), GenericRequirement::Exact(0);
+    AsyncIteratorPollProgressNoop, sym::async_iterator_poll_progress_noop, async_iterator_poll_progress_noop, Target::Fn, GenericRequirement::Exact(1);
+    IntoAsyncIterIntoIter,     sym::into_async_iter_into_iter, into_async_iter_into_iter, Target::Method(MethodKind::Trait { body: false }), GenericRequirement::Exact(0);
 
     Option,                  sym::Option,              option_type,                Target::Enum,           GenericRequirement::None;
     OptionSome,              sym::Some,                option_some_variant,        Target::Variant,        GenericRequirement::None;

@@ -280,11 +280,10 @@ where
         // The yielded value depends on the kind of coroutine, to match what AST lowering does.
         let coroutine_kind = self.elaborator.body().coroutine_kind().unwrap();
         let yield_value = match coroutine_kind {
-            // For async gen, we need `yield Poll<OptRet>::Pending`.
+            // For async gen, we need `yield PollNext::Pending`.
             CoroutineKind::Desugared(CoroutineDesugaring::AsyncGen, _) => {
                 let full_yield_ty = self.elaborator.body().yield_ty().unwrap();
-                let ty::Adt(_poll_adt, args) = *full_yield_ty.kind() else { bug!() };
-                let ty::Adt(_option_adt, args) = *args.type_at(0).kind() else { bug!() };
+                let ty::Adt(_poll_next_adt, args) = *full_yield_ty.kind() else { bug!() };
                 let yield_ty = args.type_at(0);
                 Operand::unevaluated_constant(
                     tcx,
