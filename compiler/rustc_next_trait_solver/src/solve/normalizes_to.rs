@@ -914,16 +914,11 @@ where
         ecx.probe_builtin_trait_candidate(BuiltinImplSource::Misc).enter(|ecx| {
             let expected_ty = ecx.next_ty_infer();
             // Take `AsyncIterator<Item = I>` and turn it into the corresponding
-            // coroutine yield ty `Poll<Option<I>>`.
+            // coroutine yield ty `PollNext<I>`.
             let wrapped_expected_ty = Ty::new_adt(
                 cx,
-                cx.adt_def(cx.require_adt_lang_item(SolverAdtLangItem::Poll)),
-                cx.mk_args(&[Ty::new_adt(
-                    cx,
-                    cx.adt_def(cx.require_adt_lang_item(SolverAdtLangItem::Option)),
-                    cx.mk_args(&[expected_ty.into()]),
-                )
-                .into()]),
+                cx.adt_def(cx.require_adt_lang_item(SolverAdtLangItem::PollNext)),
+                cx.mk_args(&[expected_ty.into()]),
             );
             let yield_ty = args.as_coroutine().yield_ty();
             ecx.eq(goal.param_env, wrapped_expected_ty, yield_ty)?;

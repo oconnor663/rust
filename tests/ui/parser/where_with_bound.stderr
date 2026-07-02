@@ -9,6 +9,12 @@ error[E0425]: cannot find type `Item` in the crate root
    |
 LL | fn foo<T>() where <T>::Item: ToString, T: Iterator { }
    |                        ^^^^ not found in the crate root
+   |
+help: there is an enum variant `std::async_iter::PollNext::Item`; try using the variant's enum
+   |
+LL - fn foo<T>() where <T>::Item: ToString, T: Iterator { }
+LL + fn foo<T>() where <T>std::async_iter::PollNext: ToString, T: Iterator { }
+   |
 
 error: aborting due to 2 previous errors
 

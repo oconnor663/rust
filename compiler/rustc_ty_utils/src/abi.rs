@@ -182,10 +182,10 @@ fn fn_sig_for_fn_abi<'tcx>(
                 }
                 hir::CoroutineKind::Desugared(hir::CoroutineDesugaring::AsyncGen, _) => {
                     // The signature should be
-                    // `AsyncIterator::poll_next(_, &mut Context<'_>) -> Poll<Option<Output>>`
+                    // `AsyncIterator::poll_next(_, &mut Context<'_>) -> PollNext<Output>`
                     assert_eq!(sig.return_ty, tcx.types.unit);
 
-                    // Yield type is already `Poll<Option<yield_ty>>`
+                    // Yield type is already `PollNext<yield_ty>`
                     let ret_ty = sig.yield_ty;
 
                     // We have to replace the `ResumeTy` that is used for type and borrow checking

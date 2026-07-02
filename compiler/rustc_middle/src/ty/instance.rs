@@ -864,6 +864,12 @@ impl<'tcx> Instance<'tcx> {
                 coroutine_kind,
                 hir::CoroutineKind::Desugared(hir::CoroutineDesugaring::AsyncGen, _)
             );
+            if tcx.is_lang_item(trait_item_id, LangItem::AsyncIteratorPollProgress) {
+                let poll_progress_noop =
+                    tcx.require_lang_item(LangItem::AsyncIteratorPollProgressNoop, DUMMY_SP);
+                let args = tcx.mk_args(&[rcvr_args.type_at(0).into()]);
+                return Some(Instance::new_raw(poll_progress_noop, args));
+            }
             hir::LangItem::AsyncIteratorPollNext
         } else if tcx.is_lang_item(trait_id, LangItem::Coroutine) {
             assert_matches!(coroutine_kind, hir::CoroutineKind::Coroutine(_));

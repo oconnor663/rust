@@ -43,7 +43,7 @@ async fn async_main() {
 
 use std::pin::{Pin, pin};
 use std::task::*;
-use std::async_iter::AsyncIterator;
+use std::async_iter::{AsyncIterator, PollNext};
 
 trait AsyncIterExt {
     fn next(&mut self) -> Next<'_, Self>;
@@ -63,7 +63,11 @@ impl<'s, S: AsyncIterator> Future for Next<'s, S> where S: Unpin {
     type Output = Option<S::Item>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<S::Item>> {
-        Pin::new(&mut *self.s).poll_next(cx)
+        match Pin::new(&mut *self.s).poll_next(cx) {
+            PollNext::Item(item) => Poll::Ready(Some(item)),
+            PollNext::Pending => Poll::Pending,
+            PollNext::Done => Poll::Ready(None),
+        }
     }
 }
 

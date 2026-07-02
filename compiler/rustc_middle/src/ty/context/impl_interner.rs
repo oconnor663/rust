@@ -843,6 +843,7 @@ bidirectional_lang_item_map! {
     DynMetadata,
     Option,
     Poll,
+    PollNext,
 // tidy-alphabetical-end
 }
 

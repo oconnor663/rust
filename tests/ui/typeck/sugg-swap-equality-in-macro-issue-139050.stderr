@@ -4,6 +4,11 @@ error[E0425]: cannot find type `Item` in this scope
 LL |     Item: Eq + Debug,
    |     ^^^^
    |
+help: there is an enum variant `std::async_iter::PollNext::Item`; try using the variant's enum
+   |
+LL -     Item: Eq + Debug,
+LL +     std::async_iter::PollNext: Eq + Debug,
+   |
 help: you might have meant to use an associated type of the same name
    |
 LL |     I::Item: Eq + Debug,

@@ -24,7 +24,7 @@
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::{pin, Pin};
 use std::task::{Context, Poll, Waker};
-use std::async_iter::AsyncIterator;
+use std::async_iter::{AsyncIterator, PollNext};
 
 #[test]
 fn general_coroutine() {
@@ -54,7 +54,7 @@ async gen fn async_gen_fn() -> u8 {
 fn async_gen_coroutine() {
     let f: fn() -> Pin<Box<dyn AsyncIterator<Item = u8>>> = || Box::pin(async_gen_fn());
     assert_eq!(f().as_mut().poll_next(&mut Context::from_waker(Waker::noop())),
-               Poll::Ready(Some(5)));
+               PollNext::Item(5));
 }
 
 gen fn gen_fn() -> u8 {

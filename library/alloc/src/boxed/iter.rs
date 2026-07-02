@@ -1,4 +1,4 @@
-use core::async_iter::AsyncIterator;
+use core::async_iter::{AsyncIterator, PollNext};
 use core::iter::FusedIterator;
 use core::pin::Pin;
 use core::slice;
@@ -83,8 +83,12 @@ impl<I: FusedIterator + ?Sized, A: Allocator> FusedIterator for Box<I, A> {}
 impl<S: ?Sized + AsyncIterator + Unpin> AsyncIterator for Box<S> {
     type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> PollNext<Self::Item> {
         Pin::new(&mut **self).poll_next(cx)
+    }
+
+    fn poll_progress(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        Pin::new(&mut **self).poll_progress(cx)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

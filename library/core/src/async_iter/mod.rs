@@ -30,11 +30,14 @@
 //! [`AsyncIterator`] looks like this:
 //!
 //! ```
+//! #![feature(async_iterator)]
+//! # use core::async_iter::PollNext;
 //! # use core::task::{Context, Poll};
 //! # use core::pin::Pin;
 //! trait AsyncIterator {
 //!     type Item;
-//!     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>>;
+//!     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> PollNext<Self::Item>;
+//!     fn poll_progress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()>;
 //! }
 //! ```
 //!
@@ -52,9 +55,9 @@
 //! Individual async iterators may choose to resume iteration, and so calling `next`
 //! again may or may not eventually yield `Some(Item)` again at some point.
 //!
-//! [`AsyncIterator`]'s full definition includes a number of other methods as well,
-//! but they are default methods, built on top of [`poll_next`], and so you get
-//! them for free.
+//! [`AsyncIterator`]'s full definition includes a `poll_progress` method for
+//! advancing work that does not immediately yield an item, plus a number of
+//! default methods built on top of [`poll_next`].
 //!
 //! [`Poll`]: super::task::Poll
 //! [`poll_next`]: AsyncIterator::poll_next
@@ -69,7 +72,7 @@
 //!
 //! ```no_run
 //! #![feature(async_iterator)]
-//! # use core::async_iter::AsyncIterator;
+//! # use core::async_iter::{AsyncIterator, PollNext};
 //! # use core::task::{Context, Poll};
 //! # use core::pin::Pin;
 //!
@@ -95,17 +98,21 @@
 //!     // we will be counting with usize
 //!     type Item = usize;
 //!
-//!     // poll_next() is the only required method
-//!     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+//!     // poll_next() produces the next item when one is ready.
+//!     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> PollNext<Self::Item> {
 //!         // Increment our count. This is why we started at zero.
 //!         self.count += 1;
 //!
 //!         // Check to see if we've finished counting or not.
 //!         if self.count < 6 {
-//!             Poll::Ready(Some(self.count))
+//!             PollNext::Item(self.count)
 //!         } else {
-//!             Poll::Ready(None)
+//!             PollNext::Done
 //!         }
+//!     }
+//!
+//!     fn poll_progress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+//!         Poll::Ready(())
 //!     }
 //! }
 //! ```
@@ -124,5 +131,5 @@
 mod async_iter;
 mod from_iter;
 
-pub use async_iter::{AsyncIterator, IntoAsyncIterator};
+pub use async_iter::{AsyncIterator, IntoAsyncIterator, PollNext};
 pub use from_iter::{FromIter, from_iter};

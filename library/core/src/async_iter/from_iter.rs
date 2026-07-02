@@ -1,4 +1,4 @@
-use crate::async_iter::AsyncIterator;
+use crate::async_iter::{AsyncIterator, PollNext};
 use crate::pin::Pin;
 use crate::task::{Context, Poll};
 
@@ -27,8 +27,15 @@ pub fn from_iter<I: IntoIterator>(iter: I) -> FromIter<I::IntoIter> {
 impl<I: Iterator> AsyncIterator for FromIter<I> {
     type Item = I::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(self.iter.next())
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> PollNext<Self::Item> {
+        match self.iter.next() {
+            Some(item) => PollNext::Item(item),
+            None => PollNext::Done,
+        }
+    }
+
+    fn poll_progress(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+        Poll::Ready(())
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

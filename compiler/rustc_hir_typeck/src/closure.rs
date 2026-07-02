@@ -135,15 +135,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                         Ty::new_adt(
                             tcx,
-                            tcx.adt_def(tcx.require_lang_item(hir::LangItem::Poll, expr_span)),
-                            tcx.mk_args(&[Ty::new_adt(
-                                tcx,
-                                tcx.adt_def(
-                                    tcx.require_lang_item(hir::LangItem::Option, expr_span),
-                                ),
-                                tcx.mk_args(&[yield_ty.into()]),
-                            )
-                            .into()]),
+                            tcx.adt_def(tcx.require_lang_item(hir::LangItem::PollNext, expr_span)),
+                            tcx.mk_args(&[yield_ty.into()]),
                         )
                     }
                     hir::CoroutineKind::Desugared(hir::CoroutineDesugaring::Async, _) => {

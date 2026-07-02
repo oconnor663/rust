@@ -26,8 +26,8 @@ use crate::diagnostics::{
     YieldInClosure,
 };
 use crate::{
-    AllowReturnTypeNotation, GenericArgsMode, ImplTraitContext, ImplTraitPosition, LoweringContext,
-    ParamMode, ResolverAstLoweringExt, TryBlockScope,
+    AllowReturnTypeNotation, ForAwaitProgress, GenericArgsMode, ImplTraitContext,
+    ImplTraitPosition, LoweringContext, ParamMode, ResolverAstLoweringExt, TryBlockScope,
 };
 
 pub(super) struct WillCreateDefIdsVisitor;
@@ -876,11 +876,13 @@ impl<'hir> LoweringContext<'_, 'hir> {
             this.coroutine_kind = Some(coroutine_kind);
 
             let old_ctx = this.task_context;
+            let old_for_await_progress = mem::take(&mut this.for_await_progress);
             if task_context.is_some() {
                 this.task_context = task_context;
             }
             let res = body(this);
             this.task_context = old_ctx;
+            this.for_await_progress = old_for_await_progress;
 
             (params, res)
         });
@@ -953,6 +955,48 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_expr_await(&mut self, await_kw_span: Span, expr: &Expr) -> hir::ExprKind<'hir> {
         let expr = self.arena.alloc(self.lower_expr_mut(expr));
         self.make_lowered_await(await_kw_span, expr, FutureKind::Future)
+    }
+
+    fn make_for_await_progress_stmt(
+        &mut self,
+        span: Span,
+        progress: ForAwaitProgress,
+        task_context_hid: HirId,
+    ) -> hir::Stmt<'hir> {
+        let progress_span = self.mark_span_with_reason(
+            DesugaringKind::Await,
+            span,
+            Some(Arc::clone(&self.allow_for_await)),
+        );
+        let gen_future_span = self.mark_span_with_reason(
+            DesugaringKind::Await,
+            span,
+            Some(Arc::clone(&self.allow_gen_future)),
+        );
+        let task_context_ident = Ident::with_dummy_span(sym::_task_context);
+        let iter = self.expr_ident(progress.span, progress.iter_ident, progress.iter_hir_id);
+        let ref_mut_iter = self.expr_mut_addr_of(progress_span, iter);
+        let new_unchecked = self.expr_call_lang_item_fn_mut(
+            progress_span,
+            hir::LangItem::PinNewUnchecked,
+            arena_vec![self; ref_mut_iter],
+        );
+
+        let task_context =
+            self.expr_ident_mut(gen_future_span, task_context_ident, task_context_hid);
+        let get_context = self.expr_call_lang_item_fn_mut(
+            gen_future_span,
+            hir::LangItem::GetContext,
+            arena_vec![self; task_context],
+        );
+        let call = self.expr_call_lang_item_fn(
+            progress_span,
+            hir::LangItem::AsyncIteratorPollProgress,
+            arena_vec![self; new_unchecked, get_context],
+        );
+        let progress_expr = self.arena.alloc(self.expr_unsafe(progress_span, call));
+        let pat = self.arena.alloc(self.pat_without_dbm(progress_span, hir::PatKind::Wild));
+        self.stmt_let_pat(None, progress_span, Some(progress_expr), pat, hir::LocalSource::Normal)
     }
 
     /// Takes an expr that has already been lowered and generates a desugared await loop around it
@@ -1058,7 +1102,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
             self.arena.alloc(self.expr_unsafe(span, call))
         };
 
-        // `::std::task::Poll::Ready(result) => break result`
+        // `Poll::Ready(result) => break result` for futures.
+        // `PollNext::Item(result) => break Some(result)` for async iterators.
         let loop_node_id = self.next_node_id();
         let loop_hir_id = self.lower_node_id(loop_node_id);
         let ready_arm = {
@@ -1066,31 +1111,82 @@ impl<'hir> LoweringContext<'_, 'hir> {
             let (x_pat, x_pat_hid) = self.pat_ident(gen_future_span, x_ident);
             let x_expr = self.expr_ident(gen_future_span, x_ident, x_pat_hid);
             let ready_field = self.single_pat_field(gen_future_span, x_pat);
-            let ready_pat = self.pat_lang_item_variant(span, hir::LangItem::PollReady, ready_field);
+            let ready_pat = self.pat_lang_item_variant(
+                span,
+                match await_kind {
+                    FutureKind::Future => hir::LangItem::PollReady,
+                    FutureKind::AsyncIterator => hir::LangItem::PollNextItem,
+                },
+                ready_field,
+            );
             let break_x = self.with_loop_scope(loop_hir_id, move |this| {
+                let value = match await_kind {
+                    FutureKind::Future => x_expr,
+                    FutureKind::AsyncIterator => {
+                        this.arena.alloc(this.expr_enum_variant_lang_item(
+                            gen_future_span,
+                            hir::LangItem::OptionSome,
+                            std::slice::from_ref(x_expr),
+                        ))
+                    }
+                };
                 let expr_break =
-                    hir::ExprKind::Break(this.lower_loop_destination(None), Some(x_expr));
+                    hir::ExprKind::Break(this.lower_loop_destination(None), Some(value));
                 this.arena.alloc(this.expr(gen_future_span, expr_break))
             });
             self.arm(ready_pat, break_x, span)
         };
 
-        // `::std::task::Poll::Pending => {}`
+        // `Poll::Pending => {}` for futures.
+        // `PollNext::Pending => {}` for async iterators.
         let pending_arm = {
-            let pending_pat = self.pat_lang_item_variant(span, hir::LangItem::PollPending, &[]);
+            let pending_pat = self.pat_lang_item_variant(
+                span,
+                match await_kind {
+                    FutureKind::Future => hir::LangItem::PollPending,
+                    FutureKind::AsyncIterator => hir::LangItem::PollNextPending,
+                },
+                &[],
+            );
             let empty_block = self.expr_block_empty(span);
             self.arm(pending_pat, empty_block, span)
         };
 
+        // `PollNext::Done => break None` for async iterators.
+        let done_arm = if await_kind == FutureKind::AsyncIterator {
+            let done_pat = self.pat_lang_item_variant(span, hir::LangItem::PollNextDone, &[]);
+            let break_none = self.with_loop_scope(loop_hir_id, |this| {
+                let none = this.arena.alloc(this.expr_enum_variant_lang_item(
+                    gen_future_span,
+                    hir::LangItem::OptionNone,
+                    &[],
+                ));
+                let expr_break =
+                    hir::ExprKind::Break(this.lower_loop_destination(None), Some(none));
+                this.arena.alloc(this.expr(gen_future_span, expr_break))
+            });
+            Some(self.arm(done_pat, break_none, span))
+        } else {
+            None
+        };
+
         let inner_match_stmt = {
-            let match_expr = self.expr_match(
-                span,
-                poll_expr,
-                arena_vec![self; ready_arm, pending_arm],
-                hir::MatchSource::AwaitDesugar,
-            );
+            let arms = if let Some(done_arm) = done_arm {
+                arena_vec![self; ready_arm, pending_arm, done_arm]
+            } else {
+                arena_vec![self; ready_arm, pending_arm]
+            };
+            let match_expr = self.expr_match(span, poll_expr, arms, hir::MatchSource::AwaitDesugar);
             self.stmt_expr(span, match_expr)
         };
+
+        let Some(task_context_hid) = self.task_context else {
+            unreachable!("use of `await` outside of an async context.");
+        };
+
+        // If this await is in a `for await` body, give the iterator a chance
+        // to advance work that does not produce the next item before we suspend.
+        let progress_targets = self.for_await_progress.clone();
 
         // Depending on `async` of `async gen`:
         // async     - task_context = yield ();
@@ -1108,17 +1204,23 @@ impl<'hir> LoweringContext<'_, 'hir> {
             );
             let yield_expr = self.arena.alloc(yield_expr);
 
-            let Some(task_context_hid) = self.task_context else {
-                unreachable!("use of `await` outside of an async context.");
-            };
-
             let lhs = self.expr_ident(span, task_context_ident, task_context_hid);
             let assign =
                 self.expr(span, hir::ExprKind::Assign(lhs, yield_expr, self.lower_span(span)));
             self.stmt_expr(span, assign)
         };
 
-        let loop_block = self.block_all(span, arena_vec![self; inner_match_stmt, yield_stmt], None);
+        let loop_block = if progress_targets.is_empty() {
+            self.block_all(span, arena_vec![self; inner_match_stmt, yield_stmt], None)
+        } else {
+            let mut stmts = Vec::with_capacity(progress_targets.len() + 2);
+            stmts.push(inner_match_stmt);
+            for progress in progress_targets {
+                stmts.push(self.make_for_await_progress_stmt(span, progress, task_context_hid));
+            }
+            stmts.push(yield_stmt);
+            self.block_all(span, self.arena.alloc_from_iter(stmts), None)
+        };
 
         // loop { .. }
         let loop_expr = self.arena.alloc(hir::Expr {
@@ -1605,6 +1707,18 @@ impl<'hir> LoweringContext<'_, 'hir> {
         result
     }
 
+    fn with_for_await_progress<T>(
+        &mut self,
+        progress: ForAwaitProgress,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let old_len = self.for_await_progress.len();
+        self.for_await_progress.push(progress);
+        let result = f(self);
+        self.for_await_progress.truncate(old_len);
+        result
+    }
+
     fn with_loop_condition_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         let was_in_loop_condition = self.is_in_loop_condition;
         self.is_in_loop_condition = true;
@@ -1750,6 +1864,11 @@ impl<'hir> LoweringContext<'_, 'hir> {
         let loop_hir_id = self.lower_node_id(e.id);
         let label = self.lower_label(opt_label, e.id, loop_hir_id);
 
+        // `mut iter`
+        let iter = Ident::with_dummy_span(sym::iter);
+        let (iter_pat, iter_pat_nid) =
+            self.pat_ident_binding_mode(head_span, iter, hir::BindingMode::MUT);
+
         // `None => break`
         let none_arm = {
             let break_expr =
@@ -1761,16 +1880,20 @@ impl<'hir> LoweringContext<'_, 'hir> {
         // Some(<pat>) => <body>,
         let some_arm = {
             let some_pat = self.pat_some(pat_span, pat);
-            let body_block =
-                self.with_loop_scope(loop_hir_id, |this| this.lower_block(body, false));
+            let body_block = self.with_loop_scope(loop_hir_id, |this| match loop_kind {
+                ForLoopKind::For => this.lower_block(body, false),
+                ForLoopKind::ForAwait => this.with_for_await_progress(
+                    ForAwaitProgress {
+                        span: head_span,
+                        iter_ident: iter,
+                        iter_hir_id: iter_pat_nid,
+                    },
+                    |this| this.lower_block(body, false),
+                ),
+            });
             let body_expr = self.arena.alloc(self.expr_block(body_block));
             self.arm(some_pat, body_expr, for_span)
         };
-
-        // `mut iter`
-        let iter = Ident::with_dummy_span(sym::iter);
-        let (iter_pat, iter_pat_nid) =
-            self.pat_ident_binding_mode(head_span, iter, hir::BindingMode::MUT);
 
         let match_expr = {
             let iter = self.expr_ident(head_span, iter, iter_pat_nid);
